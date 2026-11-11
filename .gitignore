@@ -1,0 +1,9 @@
+venv/
+db/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+test_extract.py
+test_y.py
+check_*.py
