@@ -1,8 +1,8 @@
-# Workplace Copilot
+# HR & Policy Copilot
 
 An AI assistant that answers employee questions from company HR documents (Leave, Work From Home, Insurance, Travel, Employee Handbook, Onboarding) using **Retrieval-Augmented Generation (RAG)** with **section-level role-based access control**. An employee never receives text from a manager-only section, because that text is filtered out before it reaches the LLM.
 
-> **Status:** 🚧 In progress. The ingestion pipeline is built and verified on the 6 synthetic documents. Retriever, generator, auth and UI are next. See the [Roadmap](#roadmap).
+> **Status:** 🚧 In progress. Ingestion and the role-aware retriever are built and tested. The generator (LLM answers with citations), auth and UI are next. See the [Roadmap](#roadmap).
 
 ---
 
@@ -24,6 +24,25 @@ PDFs → PyMuPDF (text + tables) → clean lines → heading + tag detection
 
 User (role) → question → retriever (filter: min_role_level <= user level)
             → LLM (answers only from the retrieved context) → answer + citations
+```
+
+---
+
+## Project structure
+
+```
+├── app/
+│   ├── __init__.py
+│   └── rag/
+│       ├── __init__.py
+│       ├── ingest.py        # PDFs → section-wise chunks → embeddings → ChromaDB
+│       └── retriever.py     # role-filtered search + access-control check
+├── data/
+│   └── policies/            # 6 synthetic HR PDFs
+├── eval/                    # golden Q&A set (planned)
+├── ui/                      # Streamlit app (planned)
+├── requirements.txt
+└── README.md
 ```
 
 ---
@@ -145,8 +164,8 @@ Six synthetic documents for a fictional company (NovaTech Solutions Pvt. Ltd.), 
 ## Getting started
 
 ```bash
-git clone https://github.com/<swatiagar8906-hash>/hr-copilot.git
-cd hr-copilot
+git clone https://github.com/swatiagar8906-hash/workplace-copilot.git
+cd workplace-copilot
 
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
@@ -161,18 +180,62 @@ python -m app.rag.ingest
 
 This prints a chunk count per document, the total, and the number of chunks per access level. The vector database is created in `./db`.
 
+Then try the retriever. It asks the same questions as an employee and as a manager, and finishes with an access check:
+
+```bash
+python -m app.rag.retriever
+```
+
 ---
 
-## Planned: retrieval and answering
+## Retrieval and access control (built)
 
-1. **Retriever:** embed the question and query ChromaDB with a role filter:
-   ```python
-   col.query(query_embeddings=q, n_results=5,
-             where={"min_role_level": {"$lte": user_level}})
-   ```
-2. **Access test:** ask the same question as employee and as manager; the manager-only answer must appear only for the manager.
-3. **Generator:** give the LLM numbered chunks and ask it to answer only from them and return the chunk numbers it used. If the answer is not in the context, it must say so.
-4. **Citations:** built by code from the chunk metadata. Chunks of the same section are merged into one citation with the smallest `page` and the largest `end_page`, for example *Leave Policy, 10.3 When Leave May Be Rejected or Deferred, pp.14-15*.
+`app/rag/retriever.py` embeds the question with the same model used at ingestion and queries ChromaDB with a role filter:
+
+```python
+res = col.query(
+    query_embeddings=q_emb,
+    n_results=k,
+    where={"min_role_level": {"$lte": ROLE_LEVEL[role]}},
+)
+```
+
+Chunks above the user's level are excluded inside the database, so they never reach the LLM.
+
+**Test: same question, different role**
+
+| Question | Employee gets | Manager gets |
+|---|---|---|
+| When can a manager reject a leave request? | only level 1 (5.3 Approval Timelines, 5.5 Cancellation) | level 1 plus level 2 (10.3 When Leave May Be Rejected or Deferred) |
+| What checks should a manager do before approving a travel request? | only level 1 (2.1 Basic Rules, ...) | level 2: 15.2, 15.3, 15.1 |
+| Who approves exceptions to the WFH policy? | only level 1 (sections 4, 8, 2.3) | level 2: 14.1 Approval of Exceptions first |
+
+An automatic check asks the 3 manager-type questions as an employee (20 results each) and counts chunks above level 1. Result: **ACCESS CHECK: PASSED, leaks = 0**.
+
+---
+
+## Experiments and findings
+
+**A distance cut-off cannot decide "is there an answer?"**
+ChromaDB returns a distance with every chunk (lower means closer). I looked for a limit that separates good questions from bad ones, but the numbers do not allow it:
+
+| Question | Best distance |
+|---|---|
+| "How many casual leaves do I get in a year?" (answer exists) | 0.72 |
+| Employee asking manager-only questions (answer filtered out) | 0.38 to 0.51 |
+
+The question that has the right answer scores worse than the ones that do not. Distance measures how similar the wording and topic look (paragraph chunks look closer to a sentence than a table row does), not whether a chunk contains the answer. A fixed threshold would block the good question and let the others through, so it is not used. The ranking itself is right: the correct chunk (3.1 Casual Leave) came first.
+
+**BGE query prefix.** I tried adding BGE's recommended query instruction (`"Represent this sentence for searching relevant passages: "`) before the question. On 4 test questions (asked as both roles) the top result stayed the same, some lower results got better and some worse, so it is switched off (`QUERY_PREFIX = ""`). I will re-test it on the golden evaluation set.
+
+---
+
+## Planned: answer generation
+
+1. **Generator:** give the LLM numbered chunks and ask it to answer only from them and return the chunk numbers it used.
+2. **No-answer rule:** if the context does not contain the answer, the LLM replies with a fixed message. The wording is deliberately generic ("may not be covered in the policies available to your role...") so it does not confirm that restricted content exists.
+3. **Citations:** built by code from chunk metadata. Chunks of the same section are merged into one citation with the smallest `page` and the largest `end_page`, for example *Leave Policy, 10.3 When Leave May Be Rejected or Deferred, pp.14-15*.
+4. **Check:** ask the manager-only questions as an employee and confirm the LLM answers only from allowed chunks or gives the no-answer message.
 
 ---
 
@@ -183,6 +246,7 @@ This prints a chunk count per document, the total, and the number of chunks per 
 - **Table of Contents entries look like headings.** Entries that stand alone are skipped, so they produce no chunks. Tags written in the Table of Contents are ignored for the same reason.
 - **Page-wide table detection.** `find_tables()` can return a region that also covers normal text; this is handled by splitting single-cell rows, but other PDFs may behave differently.
 - **PyMuPDF block grouping is heuristic**, so blocks are split into lines and headings are found with a regex rather than by block boundaries.
+- **No relevance cut-off.** When the user's role has no chunk that really answers a question, the retriever still returns the closest allowed chunks (see Experiments). The generator prompt has to refuse in that case.
 
 ---
 
@@ -191,8 +255,8 @@ This prints a chunk count per document, the total, and the number of chunks per 
 - [x] Synthetic HR document set (6 PDFs)
 - [x] Ingestion: section-wise chunking, table extraction, role tags, page ranges
 - [x] Verify ingestion output (chunk counts, manager sections, levels)
-- [ ] Retriever with role filter (terminal)
-- [ ] Access control test (employee vs manager on the same question)
+- [x] Retriever with role filter (terminal)
+- [x] Access control test (employee vs manager on the same question)
 - [ ] Generator with chunk-level citations
 - [ ] Add an HR-only document to demonstrate level 3
 - [ ] Golden evaluation set (30-40 questions: lookups, multi-document, role-restricted, out-of-scope)
@@ -213,6 +277,10 @@ This prints a chunk count per document, the total, and the number of chunks per 
 - Regular expressions for headings and tags (`match` vs `search`, groups, `re.sub`)
 - Why a section is a better chunking unit than a page, and how a level is inherited until the next tag
 - Debugging by inspection: when the counts looked wrong, I printed the sections and the text of suspicious chunks instead of guessing
+- Embedding distance measures topical similarity, not whether a chunk answers the question. Ranking is useful, a fixed score cut-off is not
+- Filtering by metadata inside the vector database (`where` with `$lte`) as the access-control layer
+- How to test a security property: the same question under two roles, plus an automatic leak count
+- Running a small experiment (query prefix) and keeping the simpler option when the data shows no clear gain
 
 ---
 
