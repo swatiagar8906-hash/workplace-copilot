@@ -9,7 +9,7 @@ from app.rag.generator import answer
 from app.rag.retriever import retrieve, NO_ANSWER, ROLE_LEVEL
 
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-PAUSE = 2   # seconds; Groq free tier rate limit se bachne ke liye
+PAUSE = 2   
 
 cases = json.loads((Path(__file__).parent / "questions.json").read_text())
 

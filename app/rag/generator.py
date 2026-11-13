@@ -30,7 +30,7 @@ Rules:
 
 
 def build_context(hits):
-    """Chunks ko [1], [2]... number dekar ek text mein jodta hai."""
+   
     parts = []
     for i, h in enumerate(hits, start=1):
         parts.append(f"[{i}]\n{h['text']}")
@@ -38,14 +38,14 @@ def build_context(hits):
 
 
 def call_llm(system, user):
-    """LLM ko call karne ki ek hi jagah. Provider badalna ho toh sirf ye function badlo."""
+    
     if not os.getenv("GROQ_API_KEY"):
-        raise SystemExit("GROQ_API_KEY nahi mili. Project folder ki .env file mein daalo.")
+        raise SystemExit("GROQ_API_KEY could not be found. Put it in the .env file in the project folder.")
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
     extra = {}
     if MODEL.startswith("openai/gpt-oss"):
-        extra["reasoning_effort"] = "low"     # kam soch-vichar = tez jawab, kam tokens
+        extra["reasoning_effort"] = "low"     
 
     completion = client.chat.completions.create(
         model=MODEL,
@@ -54,15 +54,14 @@ def call_llm(system, user):
             {"role": "user", "content": user},
         ],
         temperature=0.1,
-        max_completion_tokens=2000,           # reasoning model ke soch ke tokens bhi isme ginte hain
+        max_completion_tokens=2000,          
         **extra,
     )
     return (completion.choices[0].message.content or "").strip()
 
 
 def build_citations(hits, used):
-    """LLM ke bataye chunk numbers se citation banata hai, stored metadata se (LLM nahi likhta).
-    Ek hi section ke kai chunks ho toh ek citation: sabse chhota page se sabse bade end_page tak."""
+   
     groups = {}
     for n in used:
         if 1 <= n <= len(hits):
