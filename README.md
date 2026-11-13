@@ -2,7 +2,7 @@
 
 An AI assistant that answers employee questions from company HR documents (Leave, Work From Home, Insurance, Travel, Employee Handbook, Onboarding) using **Retrieval-Augmented Generation (RAG)** with **section-level role-based access control**. An employee never receives text from a manager-only section, because that text is filtered out before it reaches the LLM.
 
-> **Status:** 🚧 In progress. Ingestion and the role-aware retriever are built and tested. The generator (LLM answers with citations), auth and UI are next. See the [Roadmap](#roadmap).
+> **Status:** 🚧 In progress. Ingestion, the role-aware retriever and the Groq-based generator (answers with citations) are built. Evaluation, auth and UI are next. See the [Roadmap](#roadmap).
 
 ---
 
@@ -23,7 +23,8 @@ PDFs → PyMuPDF (text + tables) → clean lines → heading + tag detection
      → section-wise chunks with metadata → embeddings (bge-small-en-v1.5) → ChromaDB
 
 User (role) → question → retriever (filter: min_role_level <= user level)
-            → LLM (answers only from the retrieved context) → answer + citations
+            → LLM via Groq (answers only from numbered passages, or NOT_FOUND)
+            → answer + citations built by code from chunk metadata
 ```
 
 ---
@@ -36,11 +37,14 @@ User (role) → question → retriever (filter: min_role_level <= user level)
 │   └── rag/
 │       ├── __init__.py
 │       ├── ingest.py        # PDFs → section-wise chunks → embeddings → ChromaDB
-│       └── retriever.py     # role-filtered search + access-control check
+│       ├── retriever.py     # role-filtered search + access-control check
+│       └── generator.py     # Groq LLM answer + code-built citations
 ├── data/
 │   └── policies/            # 6 synthetic HR PDFs
 ├── eval/                    # golden Q&A set (planned)
 ├── ui/                      # Streamlit app (planned)
+├── .env                     # GROQ_API_KEY (not committed)
+├── try_models.py            # lists the Groq models your API key can use
 ├── requirements.txt
 └── README.md
 ```
@@ -186,6 +190,22 @@ Then try the retriever. It asks the same questions as an employee and as a manag
 python -m app.rag.retriever
 ```
 
+Finally the generator. It needs a free [Groq](https://console.groq.com) API key. Create a `.env` file in the project root (it is git-ignored):
+
+```
+GROQ_API_KEY=your_key_here
+# optional, default is openai/gpt-oss-20b
+# GROQ_MODEL=openai/gpt-oss-20b
+```
+
+Write each line exactly as `KEY=value`, with no spaces around `=` and no quotes.
+
+```bash
+python -m app.rag.generator
+```
+
+It asks 6 demo questions (general, manager-only as employee and as manager, out-of-scope) and prints each answer with its sources. Groq model names change over time. If you get a `model_not_found` error, run `python try_models.py` to list the models your key can use, then set `GROQ_MODEL` in `.env`.
+
 ---
 
 ## Retrieval and access control (built)
@@ -228,14 +248,38 @@ The question that has the right answer scores worse than the ones that do not. D
 
 **BGE query prefix.** I tried adding BGE's recommended query instruction (`"Represent this sentence for searching relevant passages: "`) before the question. On 4 test questions (asked as both roles) the top result stayed the same, some lower results got better and some worse, so it is switched off (`QUERY_PREFIX = ""`). I will re-test it on the golden evaluation set.
 
+**Bigger model did not help.** I ran the same 6 demo questions with `openai/gpt-oss-120b` instead of `openai/gpt-oss-20b`. For the employee asking the manager travel-checks question, 120b answered with employee-level text (video call, approval before booking) as if it were the manager's checks, where 20b correctly gave the no-answer message. 120b also gave a shorter manager checklist and added markdown bold. The employee "when can a manager reject" question stayed wrong on both. These are single runs, so they are not proof, but a bigger model is not a fix for the "related topic" problem; 20b stays the default. The golden evaluation set will compare models and prompts with numbers.
+
 ---
 
-## Planned: answer generation
+## Answer generation (built)
 
-1. **Generator:** give the LLM numbered chunks and ask it to answer only from them and return the chunk numbers it used.
-2. **No-answer rule:** if the context does not contain the answer, the LLM replies with a fixed message. The wording is deliberately generic ("may not be covered in the policies available to your role...") so it does not confirm that restricted content exists.
-3. **Citations:** built by code from chunk metadata. Chunks of the same section are merged into one citation with the smallest `page` and the largest `end_page`, for example *Leave Policy, 10.3 When Leave May Be Rejected or Deferred, pp.14-15*.
-4. **Check:** ask the manager-only questions as an employee and confirm the LLM answers only from allowed chunks or gives the no-answer message.
+`app/rag/generator.py` takes the role-filtered chunks and asks an LLM (Groq, `openai/gpt-oss-20b` by default) to answer from them.
+
+1. **Numbered context.** Chunks are passed as `[1]`, `[2]`, ... and the LLM must end its reply with `USED: 1, 3` (the passages it relied on).
+2. **No-answer rule.** If the passages do not directly answer the question, the LLM must reply `NOT_FOUND`. A passage about a related topic does not count. Code then returns one fixed message, defined once in `retriever.py`: *"I couldn't find this in the policies available to your role. Please contact HR if you think you need this information."* The wording is generic on purpose, so it does not confirm that restricted content exists.
+3. **Citations are built by code**, not written by the LLM. From the `USED:` numbers, the stored metadata gives document, section and pages. Chunks of the same section are merged into one citation, for example *Leave Policy, 10.3 When Leave May Be Rejected or Deferred, pp.14-15*.
+4. **One place for the LLM call** (`call_llm`), so changing the provider means changing one function.
+
+**Test run (6 demo questions)**
+
+| Question | Role | Result |
+|---|---|---|
+| How many casual leaves do I get in a year? | employee | correct: 8 days, source Leave Policy 2.1 |
+| When can a manager reject a leave request? | employee | **wrong kind of answer**: it gave the 2-working-day decision timeline from 5.3 (level 1) instead of the no-answer message |
+| Same question | manager | correct, from 10.3 When Leave May Be Rejected or Deferred |
+| What checks should a manager do before approving a travel request? | employee | no-answer message (correct) |
+| Same question | manager | correct bullet list from 15.2, no table |
+| What is the weather today? | employee | no-answer message (correct) |
+
+Access control held at answer level: employee answers cited only level 1 sections, and no manager-only text appeared.
+
+**Quality problems found and what happened after the prompt changes**
+
+- The employee travel question used to describe the employee's own checklist as the manager's checks. After telling the model not to change who a passage is about, it now returns the no-answer message.
+- The table with `|` characters is gone (plain bullets now).
+- The weather question now returns the no-answer message.
+- **Still open:** for the employee version of "When can a manager reject a leave request?", the model answered with related level 1 text (the approval timeline). Nothing restricted leaked, but the answer does not match the question. This is the "related topic" failure the prompt tries to prevent, and a prompt alone does not fully stop it. A bigger model did not fix it (see Experiments). A reranker or an answerability check are the next things to try, measured on the golden evaluation set.
 
 ---
 
@@ -247,6 +291,10 @@ The question that has the right answer scores worse than the ones that do not. D
 - **Page-wide table detection.** `find_tables()` can return a region that also covers normal text; this is handled by splitting single-cell rows, but other PDFs may behave differently.
 - **PyMuPDF block grouping is heuristic**, so blocks are split into lines and headings are found with a regex rather than by block boundaries.
 - **No relevance cut-off.** When the user's role has no chunk that really answers a question, the retriever still returns the closest allowed chunks (see Experiments). The generator prompt has to refuse in that case.
+- **The LLM can answer from related allowed text.** For a restricted question, an employee may get an answer built from nearby level 1 content instead of the no-answer message. This is not a leak (the text is allowed), but it can be misleading. A reranker or an answerability check, measured on the golden set, is the planned mitigation.
+- **Free-tier Groq limits and model churn.** Rate limits apply and model names change, so the model is configurable through `GROQ_MODEL`.
+- **Answers vary slightly between runs.** The same question can return a slightly different list (for example 8 checklist points in one run and 6 in another), so the evaluation set has to be run several times.
+- **No evaluation yet.** Answer quality has only been checked on a handful of demo questions.
 
 ---
 
@@ -257,7 +305,7 @@ The question that has the right answer scores worse than the ones that do not. D
 - [x] Verify ingestion output (chunk counts, manager sections, levels)
 - [x] Retriever with role filter (terminal)
 - [x] Access control test (employee vs manager on the same question)
-- [ ] Generator with chunk-level citations
+- [x] Generator (Groq) with code-built citations and a no-answer rule (one known miss, see Answer generation)
 - [ ] Add an HR-only document to demonstrate level 3
 - [ ] Golden evaluation set (30-40 questions: lookups, multi-document, role-restricted, out-of-scope)
 - [ ] FastAPI backend with JWT login and admin upload
@@ -281,9 +329,14 @@ The question that has the right answer scores worse than the ones that do not. D
 - Filtering by metadata inside the vector database (`where` with `$lte`) as the access-control layer
 - How to test a security property: the same question under two roles, plus an automatic leak count
 - Running a small experiment (query prefix) and keeping the simpler option when the data shows no clear gain
+- Why citations should be built by code from metadata and not written by the LLM
+- Using a sentinel token (`NOT_FOUND`) plus a `USED:` line to make LLM output easy to parse
+- Defining a message once (`NO_ANSWER`) and importing it, so the retriever and generator never disagree
+- Access control at retrieval is necessary but not sufficient: the LLM can still misread allowed text, which is why evaluation matters
+- Keeping the LLM call in one function and the model in an environment variable, because provider model names change
 
 ---
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).

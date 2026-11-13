@@ -4,12 +4,10 @@ import re
 from dotenv import load_dotenv
 from groq import Groq
 
-from app.rag.retriever import retrieve, NO_ANSWER   # no-answer message sirf retriever.py mein likha hai
+from app.rag.retriever import retrieve, NO_ANSWER   
 
-load_dotenv()                      # .env file se GROQ_API_KEY (aur GROQ_MODEL) padhta hai
+load_dotenv()                     
 
-# Groq ke model ke naam badalte rehte hain (try_models.py se apni list dekho).
-# Model badalna ho toh .env mein GROQ_MODEL likho. Behtar quality ke liye "openai/gpt-oss-120b".
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 SYSTEM = """You are an HR policy assistant for NovaTech Solutions.
@@ -43,8 +41,7 @@ def call_llm(system, user):
 
     extra = {}
     if MODEL.startswith("openai/gpt-oss"):
-        extra["reasoning_effort"] = "low"     # kam soch-vichar = tez jawab, kam tokens
-
+        extra["reasoning_effort"] = "low"     
     completion = client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -52,7 +49,7 @@ def call_llm(system, user):
             {"role": "user", "content": user},
         ],
         temperature=0.1,
-        max_completion_tokens=2000,           # reasoning model ke soch ke tokens bhi isme ginte hain
+        max_completion_tokens=2000,          
         **extra,
     )
     return (completion.choices[0].message.content or "").strip()
@@ -78,7 +75,7 @@ def build_citations(hits, used):
 
 
 def answer(question, role, k=5):
-    hits = retrieve(question, role, k)          # access control yahin lagta hai
+    hits = retrieve(question, role, k)         
     if not hits:
         return {"answer": NO_ANSWER, "citations": []}
 
