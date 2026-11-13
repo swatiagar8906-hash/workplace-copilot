@@ -1,0 +1,158 @@
+[
+ {
+  "id": "L1",
+  "type": "lookup",
+  "role": "employee",
+  "question": "How many casual leaves do I get in a year?",
+  "must_contain": [
+   "8"
+  ],
+  "expected_section": "2.1"
+ },
+ {
+  "id": "M1",
+  "type": "manager_only",
+  "role": "manager",
+  "question": "When can a manager reject a leave request?",
+  "must_contain": [
+   "25"
+  ],
+  "expected_section": "10.3"
+ },
+ {
+  "id": "M2",
+  "type": "manager_only",
+  "role": "manager",
+  "question": "What checks should a manager do before approving a travel request?",
+  "must_contain": [
+   "budget"
+  ],
+  "expected_section": "15.2"
+ },
+ {
+  "id": "R1",
+  "type": "restricted",
+  "role": "employee",
+  "question": "When can a manager reject a leave request?"
+ },
+ {
+  "id": "R2",
+  "type": "restricted",
+  "role": "employee",
+  "question": "What checks should a manager do before approving a travel request?"
+ },
+ {
+  "id": "R3",
+  "type": "restricted",
+  "role": "employee",
+  "question": "Who approves exceptions to the WFH policy?"
+ },
+ {
+  "id": "O1",
+  "type": "out_of_scope",
+  "role": "employee",
+  "question": "What is the weather today?"
+ },
+ {
+  "id": "O2",
+  "type": "out_of_scope",
+  "role": "employee",
+  "question": "What is the capital of France?"
+ },
+ {
+  "id": "O3",
+  "type": "out_of_scope",
+  "role": "manager",
+  "question": "Can you recommend a good restaurant near the office?"
+ },
+ {
+  "id": "H1",
+  "type": "hr_only",
+  "role": "hr",
+  "question": "What is the salary band for grade G5?",
+  "must_contain": [
+   "19,00,000"
+  ],
+  "expected_section": "Salary Bands"
+ },
+ {
+  "id": "H2",
+  "type": "hr_only",
+  "role": "hr",
+  "question": "At what compa-ratio is an employee flagged for review in the next salary cycle?",
+  "must_contain": [
+   "0.85"
+  ],
+  "expected_section": "8.1"
+ },
+ {
+  "id": "M3",
+  "type": "manager_only",
+  "role": "manager",
+  "question": "By when must managers submit salary revision ratings in the HRMS?",
+  "must_contain": [
+   "10 March"
+  ],
+  "expected_section": "9.1"
+ },
+ {
+  "id": "R4",
+  "type": "restricted",
+  "role": "employee",
+  "question": "What is the salary band for grade G5?"
+ },
+ {
+  "id": "R5",
+  "type": "restricted",
+  "role": "manager",
+  "question": "What is the salary band for grade G5?"
+ },
+ {
+  "id": "R6",
+  "type": "restricted",
+  "role": "employee",
+  "question": "At what compa-ratio is an employee flagged for review in the next salary cycle?"
+ },
+ {
+  "id": "R7",
+  "type": "restricted",
+  "role": "manager",
+  "question": "At what compa-ratio is an employee flagged for review in the next salary cycle?"
+ },
+ {
+  "id": "R8",
+  "type": "restricted",
+  "role": "employee",
+  "question": "By when must managers submit salary revision ratings in the HRMS?"
+ },
+ {
+  "id": "L2",
+  "type": "lookup",
+  "role": "employee",
+  "question": "Can a probationer with a medical condition work from home?",
+  "must_contain": [
+   "medical certificate"
+  ],
+  "expected_section": "11.1"
+ },
+ {
+  "id": "L3",
+  "type": "lookup",
+  "role": "employee",
+  "question": "For how many weeks can an employee returning from maternity leave request WFH?",
+  "must_contain": [
+   "12 weeks"
+  ],
+  "expected_section": "11.2"
+ },
+ {
+  "id": "L4",
+  "type": "lookup",
+  "role": "employee",
+  "question": "Within how many working days will HR acknowledge a confidential concern?",
+  "must_contain": [
+   "2 working days"
+  ],
+  "expected_section": "14."
+ }
+]

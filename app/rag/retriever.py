@@ -16,7 +16,7 @@ col = chromadb.PersistentClient(DB_PATH).get_collection("hr_policies")
 
 
 def retrieve(query, role, k=5, max_distance=MAX_DISTANCE):
-    """Sawaal ke sabse paas wale k chunks, sirf wahi jo is role ko dikhne chahiye."""
+    
     level = ROLE_LEVEL[role]
     q_emb = model.encode([query]).tolist()
 

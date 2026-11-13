@@ -1,8 +1,8 @@
 # Workplace Copilot
 
-An AI assistant that answers employee questions from company HR documents (Leave, Work From Home, Insurance, Travel, Employee Handbook, Onboarding) using **Retrieval-Augmented Generation (RAG)** with **section-level role-based access control**. An employee never receives text from a manager-only section, because that text is filtered out before it reaches the LLM.
+An AI assistant that answers employee questions from company HR documents (Leave, Work From Home, Insurance, Travel, Employee Handbook, Onboarding, HR Internal Guidelines) using **Retrieval-Augmented Generation (RAG)** with **section-level role-based access control**. An employee never receives text from a manager-only section, because that text is filtered out before it reaches the LLM.
 
-> **Status:** 🚧 In progress. Ingestion, the role-aware retriever and the Groq-based generator (answers with citations) are built. Evaluation, auth and UI are next. See the [Roadmap](#roadmap).
+> **Status:** 🚧 In progress. Ingestion, the role-aware retriever and the Groq-based generator (answers with citations) are built. A first evaluation set is running; auth and UI are next. See the [Roadmap](#roadmap).
 
 ---
 
@@ -40,8 +40,10 @@ User (role) → question → retriever (filter: min_role_level <= user level)
 │       ├── retriever.py     # role-filtered search + access-control check
 │       └── generator.py     # Groq LLM answer + code-built citations
 ├── data/
-│   └── policies/            # 6 synthetic HR PDFs
-├── eval/                    # golden Q&A set (planned)
+│   └── policies/            # 7 synthetic HR PDFs
+├── eval/
+│   ├── questions.json       # evaluation questions (lookup, manager-only, HR-only, restricted, out-of-scope)
+│   └── run_eval.py          # runs every question several times and prints pass rates
 ├── ui/                      # Streamlit app (planned)
 ├── .env                     # GROQ_API_KEY (not committed)
 ├── try_models.py            # lists the Groq models your API key can use
@@ -129,6 +131,7 @@ heading_re = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z][^.]{2,100}$")
 | 4 | Normal lines starting with a number looked like headings | The first heading regex only checked "number + text" | Stricter `heading_re` (capital letter, no full stop, length limit) |
 | 5 | **Manager sections were stored at level 1** (a real access-control leak) in the Leave and Travel policies | Long headings wrap in the PDF, so the tag was split across two lines and never matched | `merge_wrapped_tags` joins the tag back before headings are read. Found by listing every manager section with its level after ingestion |
 | 6 | **Core Leave Policy content (purpose, definitions, entitlement table) was stored as level 2** under the name "14. Revision History" | On some pages `find_tables()` returned a region covering headings and paragraphs, so they were glued into one long line and never recognised as headings. The Table of Contents had also left a manager tag "stuck" on the last entry, and that level stayed on until the next real heading | `table_row_to_lines` splits single-cell rows back into lines; page headers/footers (`Page 2 of 18`, document id) are filtered out. Found by printing the text of the suspicious chunks |
+| 7 | The new HR Internal Guidelines document put its whole **Table of Contents** into a level 1 chunk, including the titles of HR-only sections | Its TOC lines had dotted leaders (`3. Disciplinary Process ........ 3`), so they were not read as headings and ended up in the "Document Header" text | Lines with 4 or more dots in a row are dropped like page headers/footers (`NOISE_RE`). Found with a local script that prints every Document Header chunk |
 
 ### Effect on the data
 
@@ -136,7 +139,8 @@ heading_re = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z][^.]{2,100}$")
 |---|---|---|---|---|
 | First run | 337 | 324 | 13 | Wrapped tags missed, manager sections leaked into level 1 |
 | After tag-merge fix | 330 | 292 | 38 | Manager sections correct, but core Leave content wrongly in level 2 |
-| After table/header fix | **356** | **325** | **31** | Manager sections at level 2, employee content at level 1 |
+| After table/header fix | 356 | 325 | 31 | Manager sections at level 2, employee content at level 1 |
+| After adding HR Internal Guidelines and filtering Table of Contents lines | **405** | **330** | **37** | First level 3 content: 38 chunks |
 
 ---
 
@@ -150,10 +154,11 @@ heading_re = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z][^.]{2,100}$")
 | Insurance Policy | 34 | 0 |
 | Onboarding Guide | 36 | 0 |
 | Employee Handbook | 43 | 0 |
+| HR Internal Guidelines | 5 | 6 (plus 38 at level 3) |
 
 - Level 2 chunks come from the manager sections of the Leave (10.x, 11.x), Travel (15.x, 16.x) and WFH (13.x, 14.x) policies.
 - Insurance, Onboarding and the Handbook have no manager-only sections in their body text, so all their chunks are level 1.
-- No `[HR ONLY]` section exists yet, so level 3 is empty. I plan to add one more document with HR-only sections to demonstrate all three levels.
+- The seventh document, **HR Internal Guidelines**, has the first `[HR ONLY]` sections (38 chunks at level 3), two manager sections (level 2) and two employee sections (level 1), so all three access levels are now in use.
 
 **Checks I run after each ingestion** (local scripts, not committed): chunk counts per level, the list of manager sections with their level and page, and the text of any chunk that looks suspicious.
 
@@ -161,7 +166,7 @@ heading_re = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z][^.]{2,100}$")
 
 ## Dataset
 
-Six synthetic documents for a fictional company (NovaTech Solutions Pvt. Ltd.), generated with an LLM using a shared "master context" prompt (so numbers and rules stay consistent) plus one prompt per document. They use numbered headings, tables, cross-references between policies, FAQs, and the section tags above. No real company or person is referenced.
+Seven synthetic documents for a fictional company (NovaTech Solutions Pvt. Ltd.), generated with an LLM using a shared "master context" prompt (so numbers and rules stay consistent) plus one prompt per document. They use numbered headings, tables, cross-references between policies, FAQs, and the section tags above. No real company or person is referenced.
 
 ---
 
@@ -248,6 +253,21 @@ The question that has the right answer scores worse than the ones that do not. D
 
 **BGE query prefix.** I tried adding BGE's recommended query instruction (`"Represent this sentence for searching relevant passages: "`) before the question. On 4 test questions (asked as both roles) the top result stayed the same, some lower results got better and some worse, so it is switched off (`QUERY_PREFIX = ""`). I will re-test it on the golden evaluation set.
 
+**Closest-chunk distance gap (why a margin rule does not fix R1).** For every employee-side question I compared the distance of the closest allowed chunk with the closest restricted chunk (`gap` = allowed distance minus restricted distance, so a positive gap means the restricted chunk is closer):
+
+| Question | Type | Gap |
+|---|---|---|
+| R2, R3 (travel checks, WFH exceptions) | restricted | +0.08 |
+| R4, R5 (salary band) | restricted | +0.07 |
+| R6, R7 (compa-ratio) | restricted | +0.17 |
+| R8 (manager rating deadline) | restricted | -0.05 |
+| **R1** (when can a manager reject leave) | restricted | **-0.06** |
+| L4 (HR acknowledgement time) | lookup | **-0.06** |
+| M3 (manager ratings deadline) | manager-only | -0.07 |
+| L3 (maternity WFH) | lookup | -0.32 |
+
+Every question with a positive gap is a restricted question, so the current rule ("refuse if the closest chunk overall is restricted") has no false refusals in this set. But R1 and the lookup L4 have the same gap (-0.06), so no distance threshold can refuse R1 without also refusing L4. This matches the earlier finding that distance measures topic similarity, not whether a chunk answers the question. R1 needs a scorer that reads the question and the chunk together (a cross-encoder reranker) or an LLM answerability check.
+
 **Bigger model did not help.** I ran the same 6 demo questions with `openai/gpt-oss-120b` instead of `openai/gpt-oss-20b`. For the employee asking the manager travel-checks question, 120b answered with employee-level text (video call, approval before booking) as if it were the manager's checks, where 20b correctly gave the no-answer message. 120b also gave a shorter manager checklist and added markdown bold. The employee "when can a manager reject" question stayed wrong on both. These are single runs, so they are not proof, but a bigger model is not a fix for the "related topic" problem; 20b stays the default. The golden evaluation set will compare models and prompts with numbers.
 
 ---
@@ -260,6 +280,7 @@ The question that has the right answer scores worse than the ones that do not. D
 2. **No-answer rule.** If the passages do not directly answer the question, the LLM must reply `NOT_FOUND`. A passage about a related topic does not count. Code then returns one fixed message, defined once in `retriever.py`: *"I couldn't find this in the policies available to your role. Please contact HR if you think you need this information."* The wording is generic on purpose, so it does not confirm that restricted content exists.
 3. **Citations are built by code**, not written by the LLM. From the `USED:` numbers, the stored metadata gives document, section and pages. Chunks of the same section are merged into one citation, for example *Leave Policy, 10.3 When Leave May Be Rejected or Deferred, pp.14-15*.
 4. **One place for the LLM call** (`call_llm`), so changing the provider means changing one function.
+5. **Restricted-topic check.** Before calling the LLM, the code looks at the single closest chunk in the whole database (all levels). If that chunk is above the user's level, the question is about restricted content and the no-answer message is returned without calling the LLM. Only the chunk's level is read; its text is never used. It is behind a flag (`RESTRICTED_CHECK=0` turns it off) so the evaluation can compare before and after.
 
 **Test run (6 demo questions)**
 
@@ -283,6 +304,41 @@ Access control held at answer level: employee answers cited only level 1 section
 
 ---
 
+## Evaluation (first run)
+
+`python -m eval.run_eval` asks each question 3 times (the LLM answer changes between runs). Question types:
+
+- **lookup / manager_only / hr_only:** the answer must contain given keywords and cite the expected section.
+- **restricted:** the asking role must *not* get the answer, so the reply must be the no-answer message.
+- **out_of_scope:** no-answer message expected for any role.
+- **access leaks:** retrieval for every question is also checked for chunks above the asking role's level.
+
+**Results (`openai/gpt-oss-20b`, 3 runs per question)**
+
+| Type | Run 2: 17 questions, no restricted-topic check | Run 3: 20 questions, check on |
+|---|---|---|
+| lookup | 3/3 (100%) | 12/12 (100%) |
+| manager_only | 7/9 (78%) | 8/9 (89%) |
+| restricted | 18/24 (75%) | 21/24 (88%) |
+| out_of_scope | 9/9 (100%) | 9/9 (100%) |
+| hr_only | 6/6 (100%) | 6/6 (100%) |
+| access leaks | 0 | 0 |
+
+(Run 1 is described below: it had an evaluation-script bug that made correct answers fail.) Run 3 added three employee lookup questions on purpose: they sit next to restricted sections, so they would show any false refusals from the new check. None occurred.
+
+HR-only questions asked by an employee or a manager always got the no-answer message (salary band, compa-ratio threshold, manager ratings deadline).
+
+**What the failures turned out to be**
+
+- **Evaluation bug, fixed:** in the first run the model wrote `10 March` with a narrow no-break space, so my keyword match failed on a correct answer (M3, 3 failures; first run was manager_only 5/9 and restricted 19/24). The runner now normalises text, and M3 passes.
+- **Incomplete answers (M2):** the manager travel-checks answer is correct and cites 15.2, but in 1 to 2 of 3 runs it left out the budget check.
+- **Fixed by the restricted-topic check, R3:** the employee asking "Who approves exceptions to the WFH policy?" used to get an answer built from a level 1 special-cases section (Department Head, HR Business Partner, Head of HR, Finance, IT Security), presented as the general rule. The real approval matrix is in section 14.1, which is manager-only. After the check, R3 passes in all runs. I first marked this question as a wrong test; reading the PDF showed the question is right and the system was wrong.
+- **Still failing, R1 (3 of 3 runs):** the employee asking "When can a manager reject a leave request?" gets the 2-working-day timeline from 5.3. The check does not catch it because the closest chunk to this question is the level 1 section 5.3 (distance 0.38), not the manager-only 10.3 (0.43). A distance margin cannot fix it either (see Experiments); a reranker is the planned fix.
+
+Not every restricted failure has the same cause, so the remaining one needs a different fix (see Known limitations).
+
+---
+
 ## Known limitations
 
 - **Numbered notes can be detected as headings.** A line like `3. The employee must give at least 8 weeks' notice...` can look like a heading, so some section names in citations are long sentences. Access levels are not affected, because these lines inherit the level of the section above.
@@ -294,7 +350,8 @@ Access control held at answer level: employee answers cited only level 1 section
 - **The LLM can answer from related allowed text.** For a restricted question, an employee may get an answer built from nearby level 1 content instead of the no-answer message. This is not a leak (the text is allowed), but it can be misleading. A reranker or an answerability check, measured on the golden set, is the planned mitigation.
 - **Free-tier Groq limits and model churn.** Rate limits apply and model names change, so the model is configurable through `GROQ_MODEL`.
 - **Answers vary slightly between runs.** The same question can return a slightly different list (for example 8 checklist points in one run and 6 in another), so the evaluation set has to be run several times.
-- **No evaluation yet.** Answer quality has only been checked on a handful of demo questions.
+- **Small evaluation set.** 16 questions so far; pass rates on a set this small move a lot with one question. The plan is 30-40 questions.
+- **Some numbered notes become section names in citations.** For example a WFH citation reads `4. Approval is needed from the Department Head, HR Business Partner, Head of HR,`. Access levels are not affected, but citations look untidy.
 
 ---
 
@@ -306,8 +363,9 @@ Access control held at answer level: employee answers cited only level 1 section
 - [x] Retriever with role filter (terminal)
 - [x] Access control test (employee vs manager on the same question)
 - [x] Generator (Groq) with code-built citations and a no-answer rule (one known miss, see Answer generation)
-- [ ] Add an HR-only document to demonstrate level 3
-- [ ] Golden evaluation set (30-40 questions: lookups, multi-document, role-restricted, out-of-scope)
+- [x] Add an HR-only document to demonstrate level 3
+- [x] First evaluation set and runner (16 questions, each run 3 times)
+- [ ] Grow the evaluation set to 30-40 questions (more lookups, multi-document questions)
 - [ ] FastAPI backend with JWT login and admin upload
 - [ ] Streamlit chat UI with sources
 - [ ] Hybrid search (BM25 + vector), reranker, query rewriting, conversation memory
@@ -334,6 +392,8 @@ Access control held at answer level: employee answers cited only level 1 section
 - Defining a message once (`NO_ANSWER`) and importing it, so the retriever and generator never disagree
 - Access control at retrieval is necessary but not sufficient: the LLM can still misread allowed text, which is why evaluation matters
 - Keeping the LLM call in one function and the model in an environment variable, because provider model names change
+- Why an evaluation set is needed: a failing test can be a bug in the system, in the test, or just run-to-run noise, and the failures have to be read before trusting the score
+- Adding a document with HR-only sections to test all three access levels, and checking that a lower role never gets a higher role's answer
 
 ---
 

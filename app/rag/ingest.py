@@ -15,18 +15,23 @@ DOCS = {
     "Travel Policy (NT-FIN-POL-001, v2026.1).pdf": ("Travel Policy", "travel"),
     "Employee Handbook (NT-HR-HBK-001, v2026.1).pdf": ("Employee Handbook", "handbook"),
     "Onboarding Documents (NT-HR-ONB-001, v2026.1).pdf": ("Onboarding Guide", "onboarding"),
+    "HR Internal Guidelines (NT-HR-INT-001, v2026.1).pdf": ("HR Internal Guidelines", "hr_internal"),
 }
 
 TAG_LEVEL = {"ALL EMPLOYEES": 1, "MANAGER AND HR ONLY": 2, "HR ONLY": 3}
 tag_re = re.compile(r"\[(ALL EMPLOYEES|MANAGER AND HR ONLY|HR ONLY)\]", re.I)
 heading_re = re.compile(r"^\d+(\.\d+)*\.?\s+[A-Z][^.]{2,100}$")
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150, add_start_index = True)
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=800, chunk_overlap=150, add_start_index=True
+)
 
-NOISE_RE = re.compile(r"^(Page \d+ of \d+|.*\(NT-[A-Z]+-[A-Z]+-\d+, v[\d.]+\))$", re.I)
+
+NOISE_RE = re.compile(r"^(Page \d+ of \d+|.*\(NT-[A-Z]+-[A-Z]+-\d+, v[\d.]+\)|.*\.{4,}\s*\d*)$", re.I)
 
 
 def table_row_to_lines(row):
+  
     cells = [(c or "").strip() for c in row]
     filled = [c for c in cells if c]
     if not filled:
@@ -35,31 +40,34 @@ def table_row_to_lines(row):
         return [ln.strip() for ln in filled[0].split("\n") if ln.strip()]
     return [" | ".join(c.replace("\n", " ") for c in cells)]
 
+
 def page_to_lines(page):
     tables = page.find_tables().tables
     table_rects = [fitz.Rect(t.bbox) for t in tables]
 
     lines = []
-    # blocks: (x0, y0, x1, y1, text, block_no, block_type)
+   
     for b in page.get_text("blocks"):
         rect = fitz.Rect(b[:4])
         if any(rect.intersects(tr) for tr in table_rects):
-            continue                      
+            continue
         for ln in b[4].split("\n"):
             if ln.strip():
                 lines.append((b[1], ln.strip()))
     for t in tables:
         for row in t.extract():
             for text in table_row_to_lines(row):
-                lines.append((t.bbox[1], text))       
+                lines.append((t.bbox[1], text))
 
-    lines.sort(key=lambda x: x[0])        
+    lines.sort(key=lambda x: x[0])
     return [text for _, text in lines if not NOISE_RE.match(text)]
+
 
 TAG_ONLY = re.compile(r"^\[(ALL EMPLOYEES|MANAGER AND HR ONLY|HR ONLY)\]$", re.I)
 
 
 def merge_wrapped_tags(lines):
+
     out = []
     for line in lines:
         if out and "[" in out[-1] and "]" not in out[-1]:
@@ -69,6 +77,7 @@ def merge_wrapped_tags(lines):
         else:
             out.append(line)
     return out
+
 
 def ingest_pdf(filename, doc_name, category):
     doc = fitz.open(POLICY_DIR / filename)
@@ -81,11 +90,11 @@ def ingest_pdf(filename, doc_name, category):
         nonlocal buffer
         keep = buffer and (section == "Document Header" or len(buffer) > 1)
         if keep:
-            text = "\n".join(l for l,_ in buffer)
+            text = "\n".join(l for l, _ in buffer)
             starts, pos = [], 0
             for l, p in buffer:
                 starts.append((pos, p))
-                pos += len(l) + 1            # +1 = \n
+                pos += len(l) + 1           
 
             def page_at(offset):
                 pg = starts[0][1]
@@ -95,9 +104,10 @@ def ingest_pdf(filename, doc_name, category):
                     else:
                         break
                 return pg
+
             for d in splitter.create_documents([text]):
                 s = d.metadata["start_index"]
-                e = s + len(d.page_content) -1
+                e = s + len(d.page_content) - 1
                 chunks.append({
                     "text": f"{doc_name} > {section}\n{d.page_content}",
                     "meta": {
@@ -110,20 +120,20 @@ def ingest_pdf(filename, doc_name, category):
                     },
                 })
         buffer = []
+
     for page_no, page in enumerate(doc, start=1):
         for line in merge_wrapped_tags(page_to_lines(page)):
             if heading_re.match(line):
-                flush()                         
+                flush()
                 m = tag_re.search(line)
                 if m:
                     level = TAG_LEVEL[m.group(1).upper()]
-                elif re.match(r"^\d+\.\s",line):
+                elif re.match(r"^\d+\.\s", line):
                     print(f"  WARNING p{page_no}: {doc_name} > '{line}' doesn't have a valid tag (level {level} has been inherited)")
                 section = tag_re.sub("", line).strip()
             buffer.append((line, page_no))
     flush()
     return chunks
-
 
 
 if __name__ == "__main__":
@@ -153,3 +163,11 @@ if __name__ == "__main__":
     for lvl in (1, 2, 3):
         n = sum(1 for c in all_chunks if c["meta"]["min_role_level"] == lvl)
         print(f"  min_role_level={lvl}: {n} chunks")
+
+    print("\nAll sections:")
+    seen = set()
+    for c in all_chunks:
+        key = (c["meta"]["doc_name"], c["meta"]["section_heading"], c["meta"]["min_role_level"])
+        if key not in seen:
+            seen.add(key)
+            print(f"  L{key[2]} | {key[0]} > {key[1]}")

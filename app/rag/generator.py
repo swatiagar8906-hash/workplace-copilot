@@ -4,11 +4,15 @@ import re
 from dotenv import load_dotenv
 from groq import Groq
 
-from app.rag.retriever import retrieve, NO_ANSWER   
+from app.rag.retriever import retrieve, NO_ANSWER, ROLE_LEVEL   
 
 load_dotenv()                     
 
+
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+
+
+RESTRICTED_CHECK = os.getenv("RESTRICTED_CHECK", "1") == "1"
 
 SYSTEM = """You are an HR policy assistant for NovaTech Solutions.
 Answer the question using ONLY the numbered context passages in the user message.
@@ -41,7 +45,8 @@ def call_llm(system, user):
 
     extra = {}
     if MODEL.startswith("openai/gpt-oss"):
-        extra["reasoning_effort"] = "low"     
+        extra["reasoning_effort"] = "low"     # kam soch-vichar = tez jawab, kam tokens
+
     completion = client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -49,7 +54,7 @@ def call_llm(system, user):
             {"role": "user", "content": user},
         ],
         temperature=0.1,
-        max_completion_tokens=2000,          
+        max_completion_tokens=2000,           # reasoning model ke soch ke tokens bhi isme ginte hain
         **extra,
     )
     return (completion.choices[0].message.content or "").strip()
@@ -74,9 +79,18 @@ def build_citations(hits, used):
     return citations
 
 
+def top_hit_is_restricted(question, role):
+    
+    top = retrieve(question, "hr", k=1)        
+    return bool(top) and top[0]["meta"]["min_role_level"] > ROLE_LEVEL[role]
+
+
 def answer(question, role, k=5):
-    hits = retrieve(question, role, k)         
+    hits = retrieve(question, role, k)          
     if not hits:
+        return {"answer": NO_ANSWER, "citations": []}
+
+    if RESTRICTED_CHECK and top_hit_is_restricted(question, role):
         return {"answer": NO_ANSWER, "citations": []}
 
     user = f"Context passages:\n\n{build_context(hits)}\n\nQuestion: {question}"
