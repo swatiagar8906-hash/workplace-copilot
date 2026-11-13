@@ -181,7 +181,7 @@ source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Put the PDFs in `data/policies/` (the file names are listed in the `DOCS` dictionary in `ingest.py`), then run from the project root:
+Put the PDFs in [`data/policies/`](data/policies) (the file names are listed in the `DOCS` dictionary in `ingest.py`), then run from the project root:
 
 ```bash
 python -m app.rag.ingest
