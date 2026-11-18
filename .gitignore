@@ -7,3 +7,4 @@ __pycache__/
 test_extract.py
 test_y.py
 check_*.py
+demo.py
