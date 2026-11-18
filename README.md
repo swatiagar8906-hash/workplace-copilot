@@ -2,7 +2,7 @@
 
 An AI assistant that answers employee questions from company HR documents (Leave, Work From Home, Insurance, Travel, Employee Handbook, Onboarding, HR Internal Guidelines) using **Retrieval-Augmented Generation (RAG)** with **section-level role-based access control**. An employee never receives text from a manager-only section, because that text is filtered out before it reaches the LLM.
 
-> **Status:** 🚧 In progress. Ingestion, the role-aware retriever and the Groq-based generator (answers with citations) are built. A first evaluation set is running; auth and UI are next. See the [Roadmap](#roadmap).
+> **Status:** 🚧 In progress. Ingestion, the role-aware retriever, the Groq-based generator (answers with citations) and a FastAPI backend (`/ask`) are built. A first evaluation set is running; login (JWT) and the UI are next. See the [Roadmap](#roadmap).
 
 ---
 
@@ -25,6 +25,8 @@ PDFs → PyMuPDF (text + tables) → clean lines → heading + tag detection
 User (role) → question → retriever (filter: min_role_level <= user level)
             → LLM via Groq (answers only from numbered passages, or NOT_FOUND)
             → answer + citations built by code from chunk metadata
+
+FastAPI: POST /ask (question + role) → the pipeline above → JSON answer (login is the next step)
 ```
 
 ---
@@ -34,6 +36,7 @@ User (role) → question → retriever (filter: min_role_level <= user level)
 ```
 ├── app/
 │   ├── __init__.py
+│   ├── main.py              # FastAPI app: /health and /ask
 │   └── rag/
 │       ├── __init__.py
 │       ├── ingest.py        # PDFs → section-wise chunks → embeddings → ChromaDB
@@ -211,6 +214,14 @@ python -m app.rag.generator
 
 It asks 6 demo questions (general, manager-only as employee and as manager, out-of-scope) and prints each answer with its sources. Groq model names change over time. If you get a `model_not_found` error, run `python try_models.py` to list the models your key can use, then set `GROQ_MODEL` in `.env`.
 
+To run the API:
+
+```bash
+python -m uvicorn app.main:app --reload
+```
+
+Then open http://127.0.0.1:8000/docs. FastAPI builds this page from the code, so every endpoint can be tried there (see [API](#api-built)).
+
 ---
 
 ## Retrieval and access control (built)
@@ -251,6 +262,16 @@ ChromaDB returns a distance with every chunk (lower means closer). I looked for 
 
 The question that has the right answer scores worse than the ones that do not. Distance measures how similar the wording and topic look (paragraph chunks look closer to a sentence than a table row does), not whether a chunk contains the answer. A fixed threshold would block the good question and let the others through, so it is not used. The ranking itself is right: the correct chunk (3.1 Casual Leave) came first.
 
+**A distance cut-off can detect off-topic questions, though.** I measured the distance of the closest chunk in the whole database (all roles) for different kinds of questions (`check_scope.py`, a local script):
+
+| Kind of question | Closest-chunk distance |
+|---|---|
+| Policy questions from the evaluation set | 0.11 to 0.72 |
+| Work-related but not in the policies ("Who is the CEO?", "Can I bring my dog to the office?", "Is there a gym?") | 0.50 to 0.82 |
+| Clearly off-topic ("What is the weather today?", "What is 25 times 17?", "Tell me a joke") | 0.85 to 1.06 |
+
+There is a gap between the policy questions and the off-topic ones, so a cut-off of **0.85** separates them on this set. This does not contradict the finding above: distance can say "this is about something else entirely", but it cannot say "this chunk answers the question". The margin is thin (25 times 17 is at 0.853, the farthest real question at 0.72) and the set is small, so the number is a constant in `generator.py` that can be changed after more testing.
+
 **BGE query prefix.** I tried adding BGE's recommended query instruction (`"Represent this sentence for searching relevant passages: "`) before the question. On 4 test questions (asked as both roles) the top result stayed the same, some lower results got better and some worse, so it is switched off (`QUERY_PREFIX = ""`). I will re-test it on the golden evaluation set.
 
 **Closest-chunk distance gap (why a margin rule does not fix R1).** For every employee-side question I compared the distance of the closest allowed chunk with the closest restricted chunk (`gap` = allowed distance minus restricted distance, so a positive gap means the restricted chunk is closer):
@@ -281,6 +302,7 @@ Every question with a positive gap is a restricted question, so the current rule
 3. **Citations are built by code**, not written by the LLM. From the `USED:` numbers, the stored metadata gives document, section and pages. Chunks of the same section are merged into one citation, for example *Leave Policy, 10.3 When Leave May Be Rejected or Deferred, pp.14-15*.
 4. **One place for the LLM call** (`call_llm`), so changing the provider means changing one function.
 5. **Restricted-topic check.** Before calling the LLM, the code looks at the single closest chunk in the whole database (all levels). If that chunk is above the user's level, the question is about restricted content and the no-answer message is returned without calling the LLM. Only the chunk's level is read; its text is never used. It is behind a flag (`RESTRICTED_CHECK=0` turns it off) so the evaluation can compare before and after.
+6. **Off-topic check.** The same closest-chunk lookup is used first: if even the closest chunk in the whole database is farther than 0.85, the question is not about company policies and a different message is returned: *"I can only answer questions about company policies, such as leave, work from home, travel or insurance etc."* This message never mentions roles or restricted content. A restricted question and a question that is simply not in the documents still get the same no-answer message, so a user cannot tell whether a hidden section exists. Only clearly off-topic questions are told apart, and they are decided on the whole database, so a restricted topic never counts as off-topic.
 
 **Test run (6 demo questions)**
 
@@ -299,8 +321,35 @@ Access control held at answer level: employee answers cited only level 1 section
 
 - The employee travel question used to describe the employee's own checklist as the manager's checks. After telling the model not to change who a passage is about, it now returns the no-answer message.
 - The table with `|` characters is gone (plain bullets now).
-- The weather question now returns the no-answer message.
+- The weather question returned the no-answer message at the time of this run. Since the off-topic check (item 6) it returns the off-topic message instead.
 - **Still open:** for the employee version of "When can a manager reject a leave request?", the model answered with related level 1 text (the approval timeline). Nothing restricted leaked, but the answer does not match the question. This is the "related topic" failure the prompt tries to prevent, and a prompt alone does not fully stop it. A bigger model did not fix it (see Experiments). A reranker or an answerability check are the next things to try, measured on the golden evaluation set.
+
+---
+
+## API (built)
+
+`app/main.py` exposes the pipeline with FastAPI:
+
+| Method and path | What it does | Status codes |
+|---|---|---|
+| `GET /health` | Returns `{"status": "ok"}`. Tells you the server is running; it does not touch the database or the LLM | 200 |
+| `POST /ask` | Body: `{"question": "...", "role": "employee"}`. Returns `{"answer": "...", "citations": [...]}` | 200, 400 (unknown role), 404 (off-topic question), 422 (missing or wrong fields, sent by FastAPI) |
+
+```bash
+curl -X POST http://127.0.0.1:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the salary band for grade G5?", "role": "hr"}'
+```
+
+FastAPI also serves an interactive page at `/docs` and the machine-readable description at `/openapi.json`, both generated from the code.
+
+**Why the status codes are what they are**
+
+- **404 for off-topic questions** (`{"detail": "I can only answer questions about company policies..."}`). Nothing in any policy is related to the question.
+- **200 for restricted questions.** A user asking about a section above their level gets the normal no-answer message with status 200, the same as a question that is not in the documents. A 403 would tell the user that a hidden section exists.
+- **400 for an unknown role** (anything except `employee`, `manager`, `hr`).
+
+**Temporary:** the role is sent in the request body, so anyone can claim to be HR. This is only for development. The next step is JWT login, so that the role comes from a signed token and the request no longer carries it.
 
 ---
 
@@ -310,7 +359,7 @@ Access control held at answer level: employee answers cited only level 1 section
 
 - **lookup / manager_only / hr_only:** the answer must contain given keywords and cite the expected section.
 - **restricted:** the asking role must *not* get the answer, so the reply must be the no-answer message.
-- **out_of_scope:** no-answer message expected for any role.
+- **out_of_scope:** the off-topic message is expected for any role (before the off-topic check was added, the no-answer message was expected).
 - **access leaks:** retrieval for every question is also checked for chunks above the asking role's level.
 
 **Results (`openai/gpt-oss-20b`, 3 runs per question)**
@@ -323,6 +372,8 @@ Access control held at answer level: employee answers cited only level 1 section
 | out_of_scope | 9/9 (100%) | 9/9 (100%) |
 | hr_only | 6/6 (100%) | 6/6 (100%) |
 | access leaks | 0 | 0 |
+
+These runs were made before the off-topic check, so the out_of_scope row was measured against the no-answer message. The evaluation has to be run again with the new check.
 
 (Run 1 is described below: it had an evaluation-script bug that made correct answers fail.) Run 3 added three employee lookup questions on purpose: they sit next to restricted sections, so they would show any false refusals from the new check. None occurred.
 
@@ -348,25 +399,29 @@ Not every restricted failure has the same cause, so the remaining one needs a di
 - **PyMuPDF block grouping is heuristic**, so blocks are split into lines and headings are found with a regex rather than by block boundaries.
 - **No relevance cut-off.** When the user's role has no chunk that really answers a question, the retriever still returns the closest allowed chunks (see Experiments). The generator prompt has to refuse in that case.
 - **The LLM can answer from related allowed text.** For a restricted question, an employee may get an answer built from nearby level 1 content instead of the no-answer message. This is not a leak (the text is allowed), but it can be misleading. A reranker or an answerability check, measured on the golden set, is the planned mitigation.
+- **No authentication yet.** The role is sent by the client in the request body, so it can be faked. JWT login is the next step.
+- **The off-topic cut-off is one fixed number (0.85).** It was measured on about 30 questions and the margin is thin. A real policy question that is worded very differently from the documents could be called off-topic and get the off-topic message.
 - **Free-tier Groq limits and model churn.** Rate limits apply and model names change, so the model is configurable through `GROQ_MODEL`.
 - **Answers vary slightly between runs.** The same question can return a slightly different list (for example 8 checklist points in one run and 6 in another), so the evaluation set has to be run several times.
-- **Small evaluation set.** 16 questions so far; pass rates on a set this small move a lot with one question. The plan is 30-40 questions.
+- **Small evaluation set.** 20 questions so far; pass rates on a set this small move a lot with one question. The plan is 30-40 questions.
 - **Some numbered notes become section names in citations.** For example a WFH citation reads `4. Approval is needed from the Department Head, HR Business Partner, Head of HR,`. Access levels are not affected, but citations look untidy.
 
 ---
 
 ## Roadmap
 
-- [x] Synthetic HR document set (6 PDFs)
+- [x] Synthetic HR document set (7 PDFs)
 - [x] Ingestion: section-wise chunking, table extraction, role tags, page ranges
 - [x] Verify ingestion output (chunk counts, manager sections, levels)
 - [x] Retriever with role filter (terminal)
 - [x] Access control test (employee vs manager on the same question)
 - [x] Generator (Groq) with code-built citations and a no-answer rule (one known miss, see Answer generation)
 - [x] Add an HR-only document to demonstrate level 3
-- [x] First evaluation set and runner (16 questions, each run 3 times)
+- [x] First evaluation set and runner (20 questions, each run 3 times)
+- [x] Off-topic detection with its own message (cut-off measured, see Experiments)
+- [x] FastAPI backend: `/health` and `/ask` (the role is sent by the client for now)
 - [ ] Grow the evaluation set to 30-40 questions (more lookups, multi-document questions)
-- [ ] FastAPI backend with JWT login and admin upload
+- [ ] JWT login so the role comes from a token, and admin upload
 - [ ] Streamlit chat UI with sources
 - [ ] Hybrid search (BM25 + vector), reranker, query rewriting, conversation memory
 - [ ] RAGAS evaluation (before/after comparison)
@@ -394,6 +449,9 @@ Not every restricted failure has the same cause, so the remaining one needs a di
 - Keeping the LLM call in one function and the model in an environment variable, because provider model names change
 - Why an evaluation set is needed: a failing test can be a bug in the system, in the test, or just run-to-run noise, and the failures have to be read before trusting the score
 - Adding a document with HR-only sections to test all three access levels, and checking that a lower role never gets a higher role's answer
+- Measuring before choosing a threshold: the same distance that cannot judge "is there an answer" can detect an off-topic question
+- Designing responses so they do not leak: a restricted question and a missing one get the same reply, and only clearly off-topic questions are told apart
+- Basics of a FastAPI backend: endpoints, request bodies, the auto-generated `/docs` page, and what HTTP status codes (200, 400, 404, 422) mean
 
 ---
 
