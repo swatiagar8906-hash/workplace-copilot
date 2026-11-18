@@ -11,6 +11,11 @@ MAX_DISTANCE = None
 NO_ANSWER = ("I couldn't find this in the policies available to your role. "
              "Please contact HR if you think you need this information.")
 
+# Shown when the question has nothing to do with company policies at all.
+# It must not mention roles or restricted content.
+OFF_TOPIC = ("I can only answer questions about company policies, such as leave, "
+             "work from home, travel or insurance etc.")
+
 model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 col = chromadb.PersistentClient(DB_PATH).get_collection("hr_policies")
 

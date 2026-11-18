@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from app.rag.generator import answer
-from app.rag.retriever import retrieve, NO_ANSWER, ROLE_LEVEL
+from app.rag.retriever import retrieve, NO_ANSWER, OFF_TOPIC, ROLE_LEVEL
 
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 3
 PAUSE = 2   
@@ -15,8 +15,10 @@ cases = json.loads((Path(__file__).parent / "questions.json").read_text())
 
 
 def check(case, r):
-    if case["type"] in ("restricted", "out_of_scope"):
+    if case["type"] == "restricted":
         return r["answer"] == NO_ANSWER
+    if case["type"] == "out_of_scope":
+        return r["answer"] == OFF_TOPIC
     if r["answer"] == NO_ANSWER:
         return False
     

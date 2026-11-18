@@ -4,7 +4,7 @@ import re
 from dotenv import load_dotenv
 from groq import Groq
 
-from app.rag.retriever import retrieve, NO_ANSWER, ROLE_LEVEL   
+from app.rag.retriever import retrieve, NO_ANSWER, OFF_TOPIC, ROLE_LEVEL
 
 load_dotenv()                     
 
@@ -13,6 +13,10 @@ MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 
 RESTRICTED_CHECK = os.getenv("RESTRICTED_CHECK", "1") == "1"
+
+# If even the closest chunk in the WHOLE database is farther than this,
+# the question is not about company policies (measured with check_scope.py).
+OFF_TOPIC_DISTANCE = 0.85
 
 SYSTEM = """You are an HR policy assistant for NovaTech Solutions.
 Answer the question using ONLY the numbered context passages in the user message.
@@ -78,18 +82,24 @@ def build_citations(hits, used):
     return citations
 
 
-def top_hit_is_restricted(question, role):
-    
-    top = retrieve(question, "hr", k=1)        
+def top_hit_is_restricted(top, role):
+    # top = closest chunk over the whole database (retrieved at hr level)
     return bool(top) and top[0]["meta"]["min_role_level"] > ROLE_LEVEL[role]
 
 
 def answer(question, role, k=5):
+    # Closest chunk over the whole database. Used for two checks below.
+    nearest = retrieve(question, "hr", k=1)
+
+    # 1) Not about company policies at all: say so (same text for every role).
+    if nearest and nearest[0]["distance"] > OFF_TOPIC_DISTANCE:
+        return {"answer": OFF_TOPIC, "citations": []}
+
     hits = retrieve(question, role, k)          
     if not hits:
         return {"answer": NO_ANSWER, "citations": []}
 
-    if RESTRICTED_CHECK and top_hit_is_restricted(question, role):
+    if RESTRICTED_CHECK and top_hit_is_restricted(nearest, role):
         return {"answer": NO_ANSWER, "citations": []}
 
     user = f"Context passages:\n\n{build_context(hits)}\n\nQuestion: {question}"
@@ -115,7 +125,7 @@ def show(question, role):
     if r["citations"]:
         for c in r["citations"]:
             print("  Source:", c)
-    elif r["answer"] != NO_ANSWER:
+    elif r["answer"] not in (NO_ANSWER, OFF_TOPIC):
         print("  (no sources reported)")
 
 
